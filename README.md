@@ -223,3 +223,19 @@ docker compose run --rm test npm run test:integration
 ## ✅ Production-Readiness Notes
 
 This backend microservice is production-oriented and fully tested end-to-end. UI responsiveness requirements are not applicable here because this project intentionally has no frontend layer.
+
+---
+
+## 🧩 GitHub Actions Secrets Setup
+
+To enable Docker image publishing in CI, configure these repository secrets:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+
+Steps:
+1. Open GitHub repository → **Settings** → **Secrets and variables** → **Actions**.
+2. Add both secrets above.
+3. Re-run the failed workflow.
+
+If these secrets are not present, the `push-image` job is skipped while build/tests still run.
