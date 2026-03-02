@@ -1,18 +1,18 @@
+// Seed script executed by mongo on first container start.
+// Uses upsert so repeated docker compose restarts don't fail.
 db = db.getSiblingDB('ratelimitdb');
 
 db.clients.createIndex({ clientId: 1 }, { unique: true });
 db.clients.createIndex({ apiKeyFingerprint: 1 }, { unique: true });
 
-db.clients.insertMany([
+const seeds = [
   {
     clientId: 'seed-client-basic',
     hashedApiKey: '$2a$12$uWQkacQ7I2W6b0r4rlx2xOoV7mF2Ci9v6I5mGt4c9M8P6W8JboNGi',
     apiKeyFingerprint:
       '52f327f2ac3443f55f5d5007c4190ca5f42f6b97f3e53d7dd193f4ca0d6e2af2',
     maxRequests: 10,
-    windowSeconds: 60,
-    createdAt: new Date(),
-    updatedAt: new Date()
+    windowSeconds: 60
   },
   {
     clientId: 'seed-client-pro',
@@ -20,9 +20,7 @@ db.clients.insertMany([
     apiKeyFingerprint:
       'f6a8e056f2007f2080f27f61f68a3e21106be0b59cb5298297bc6f85f0b5bc5d',
     maxRequests: 100,
-    windowSeconds: 60,
-    createdAt: new Date(),
-    updatedAt: new Date()
+    windowSeconds: 60
   },
   {
     clientId: 'seed-client-burst',
@@ -30,8 +28,20 @@ db.clients.insertMany([
     apiKeyFingerprint:
       '3e8fd56f97ebf67f6f68d7294f4899f8e2cc8fcce7647750f9d16e2e5b8f4d66',
     maxRequests: 500,
-    windowSeconds: 60,
-    createdAt: new Date(),
-    updatedAt: new Date()
+    windowSeconds: 60
   }
-], { ordered: false });
+];
+
+const now = new Date();
+
+seeds.forEach(function (seed) {
+  db.clients.updateOne(
+    { clientId: seed.clientId },
+    {
+      $setOnInsert: Object.assign({}, seed, { createdAt: now, updatedAt: now })
+    },
+    { upsert: true }
+  );
+});
+
+print('Seed complete: ' + seeds.length + ' clients ensured.');
