@@ -4,7 +4,7 @@
 
 ### Scalable API Rate Limiting Microservice
 
-[![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub_Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)](https://github.com/features/actions)
+[![CI/CD](https://github.com/ramalokeshreddyp/RateGuard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ramalokeshreddyp/RateGuard/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Stage-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 [![Node.js](https://img.shields.io/badge/Node.js-20_LTS-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
@@ -216,8 +216,8 @@ my-ratelimit-service/
 ### Step 1 — Clone
 
 ```bash
-git clone <your-repository-url>
-cd my-ratelimit-service
+git clone https://github.com/ramalokeshreddyp/RateGuard.git
+cd RateGuard
 ```
 
 ### Step 2 — Configure (optional)
