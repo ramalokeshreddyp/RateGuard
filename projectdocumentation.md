@@ -362,17 +362,17 @@ flowchart TD
 
 ```mermaid
 stateDiagram-v2
-    [*] --> BucketAbsent: First request for clientId+path
+    [*] --> BucketAbsent : First request for clientId+path
 
-    BucketAbsent --> TokensFull: EVAL: initialize tokens=capacity\nlastRefill=now
-    TokensFull --> TokensDecremented: EVAL: tokens >= 1, consume
-    TokensDecremented --> TokensDecremented: EVAL: subsequent requests within limit
-    TokensDecremented --> TokensRefilling: Time passes (idle)
-    TokensRefilling --> TokensFull: Enough time elapsed (full refill)
-    TokensDecremented --> BucketExhausted: tokens < 1 after consume attempt
-    BucketExhausted --> TokensRefilling: Time passes, partial refill
-    TokensFull --> BucketAbsent: TTL expires (2× windowSeconds idle)
-    BucketExhausted --> BucketAbsent: TTL expires
+    BucketAbsent --> TokensFull : Bucket initialised at full capacity
+    TokensFull --> TokensDecremented : Token consumed on request
+    TokensDecremented --> TokensDecremented : Subsequent requests within limit
+    TokensDecremented --> TokensRefilling : Time passes while idle
+    TokensRefilling --> TokensFull : Full refill after window elapses
+    TokensDecremented --> BucketExhausted : Request arrives with tokens below 1
+    BucketExhausted --> TokensRefilling : Partial refill over time
+    TokensFull --> BucketAbsent : TTL expires after 2x window idle
+    BucketExhausted --> BucketAbsent : TTL expires
 ```
 
 ---
@@ -743,12 +743,12 @@ mindmap
       Zero race conditions
         Lua EVAL atomicity
         No TOCTOU window
-      O(1) per request
+      Constant-time per request
         2 Redis fields only
         No growing data structures
       Stateless app nodes
         Any pod handles any request
-        Safe to kill/restart anytime
+        Safe to kill or restart
       Standard X-RateLimit headers
         Limit, Remaining, Reset
         Compatible with all HTTP clients
@@ -757,7 +757,7 @@ mindmap
         docker compose up --build
         Auto-seeded test data
       Comprehensive tests
-        43 tests, 5 suites
+        43 tests across 5 suites
         ioredis-mock for fast unit tests
       Clear error messages
         400 with field details
@@ -770,23 +770,23 @@ mindmap
         Redis TTL cleans idle keys
         No manual cleanup needed
       Health endpoint
-        Live MongoDB/Redis status
-        Container orchestrator compatible
+        Live MongoDB and Redis status
+        Orchestrator compatible
       Structured logs
         Machine-parseable JSON
         Request ID tracing
       Lean Docker image
-        .dockerignore reduces build context
-        ~80MB production image
+        dockerignore reduces build context
+        80MB production image
     Business Value
       Prevents abuse
         DDoS mitigation
         Fair usage enforcement
       Configurable per client
-        Different plans/tiers
+        Different plans and tiers
         Custom windows via API
       API versioned
-        /api/v1/ prefix
+        api/v1 prefix
         Non-breaking future changes
       Configurable security
         BCRYPT_ROUNDS env var
@@ -825,29 +825,46 @@ mindmap
 ## 16. Future Enhancements
 
 ```mermaid
-roadmap
-    title RateGuard Feature Roadmap
-    section Phase 2 — Management API
-        PUT /api/v1/clients/:clientId   : done, future
-        DELETE /api/v1/clients/:clientId : done, future
-        GET /api/v1/ratelimit/status/:clientId : active, future
-        Bulk client registration endpoint : future
-    section Phase 3 — Observability
-        GET /metrics Prometheus endpoint : future
-        Grafana dashboard template       : future
-        OpenTelemetry tracing            : future
-        Alert rules for spike detection  : future
-    section Phase 4 — Advanced Features
-        IP-based rate limiting           : future
-        Global rate limits cross-path    : future
-        Dynamic policy updates via Redis pub/sub : future
-        Rate limit bypass whitelist      : future
-        Client policy caching in Redis   : future
-    section Phase 5 — Production Hardening
-        Redis Cluster support            : future
-        mTLS for internal auth           : future
-        Kubernetes Helm chart            : future
-        HPA + autoscaling config         : future
+flowchart LR
+    subgraph P2["📦 Phase 2 — Management API"]
+        direction TB
+        p2a["PUT /api/v1/clients/:clientId"]
+        p2b["DELETE /api/v1/clients/:clientId"]
+        p2c["GET /api/v1/ratelimit/status/:clientId"]
+        p2d["Bulk client registration"]
+    end
+
+    subgraph P3["📊 Phase 3 — Observability"]
+        direction TB
+        p3a["GET /metrics — Prometheus"]
+        p3b["Grafana dashboard template"]
+        p3c["OpenTelemetry tracing"]
+        p3d["Spike-detection alert rules"]
+    end
+
+    subgraph P4["⚡ Phase 4 — Advanced Features"]
+        direction TB
+        p4a["IP-based rate limiting"]
+        p4b["Global cross-path limits"]
+        p4c["Redis pub/sub policy updates"]
+        p4d["Rate limit bypass whitelist"]
+        p4e["Client policy Redis cache"]
+    end
+
+    subgraph P5["🔐 Phase 5 — Production Hardening"]
+        direction TB
+        p5a["Redis Cluster support"]
+        p5b["mTLS internal auth"]
+        p5c["Kubernetes Helm chart"]
+        p5d["HPA + autoscaling config"]
+    end
+
+    P2 --> P3 --> P4 --> P5
+
+    style P2 fill:#0d47a1,color:#fff
+    style P3 fill:#1b5e20,color:#fff
+    style P4 fill:#4a148c,color:#fff
+    style P5 fill:#b71c1c,color:#fff
 ```
 
 ### Priority Enhancement: Client Policy Caching

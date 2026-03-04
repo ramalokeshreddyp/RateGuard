@@ -47,7 +47,7 @@ mindmap
       Token Bucket
       Redis Lua EVAL
       Burst tolerance
-      O(1) state per client
+      Constant-time state per client
     Storage
       MongoDB
         Client policies
@@ -59,13 +59,13 @@ mindmap
         ioredis-mock for unit tests
     API Surface
       POST /api/v1/clients
-      GET /api/v1/clients/:clientId
+      GET /api/v1/clients/:id
       POST /api/v1/ratelimit/check
       GET /health
-      X-RateLimit-* headers
+      X-RateLimit headers
     Operations
-      4-stage multi-stage Docker
-      .dockerignore for lean builds
+      4-stage Docker build
+      dockerignore for lean builds
       GitHub Actions CI
       GHA layer cache
       Structured logging
