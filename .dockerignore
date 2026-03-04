@@ -3,10 +3,7 @@ node_modules
 .env
 .env.*
 !.env.example
-tests
-*.md
 *.log
 .DS_Store
-*.test.js
 coverage
 .nyc_output
