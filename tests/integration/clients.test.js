@@ -11,6 +11,11 @@ const registerClient = (payload) =>
     .set('x-internal-api-key', INTERNAL_KEY)
     .send(payload);
 
+const getClient = (clientId) =>
+  request(app)
+    .get(`/api/v1/clients/${clientId}`)
+    .set('x-internal-api-key', INTERNAL_KEY);
+
 describe('POST /api/v1/clients', () => {
   test('registers client successfully', async () => {
     const response = await registerClient({
@@ -88,7 +93,7 @@ describe('POST /api/v1/clients', () => {
 
     const payloadB = {
       clientId: 'client-unique-2',
-      apiKey: 'shared-api-key-value-xyz9',  // same apiKey
+      apiKey: 'shared-api-key-value-xyz9', // same apiKey
       maxRequests: 5,
       windowSeconds: 60
     };
@@ -136,5 +141,52 @@ describe('POST /api/v1/clients', () => {
       });
 
     expect(response.status).toBe(401);
+  });
+});
+
+describe('GET /api/v1/clients/:clientId', () => {
+  test('returns client config for a registered client', async () => {
+    await registerClient({
+      clientId: 'get-client-test',
+      apiKey: 'get-client-key-abc12345',
+      maxRequests: 50,
+      windowSeconds: 30
+    });
+
+    const res = await getClient('get-client-test');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      clientId: 'get-client-test',
+      maxRequests: 50,
+      windowSeconds: 30
+    });
+  });
+
+  test('does not expose hashed API key or fingerprint', async () => {
+    await registerClient({
+      clientId: 'get-client-secure',
+      apiKey: 'get-client-secure-key-xyz9',
+      maxRequests: 10,
+      windowSeconds: 60
+    });
+
+    const res = await getClient('get-client-secure');
+
+    expect(res.status).toBe(200);
+    expect(res.body.hashedApiKey).toBeUndefined();
+    expect(res.body.apiKeyFingerprint).toBeUndefined();
+    expect(res.body.apiKey).toBeUndefined();
+  });
+
+  test('returns 404 for an unknown clientId', async () => {
+    const res = await getClient('does-not-exist-xyz');
+    expect(res.status).toBe(404);
+    expect(res.body.message).toMatch(/not found/i);
+  });
+
+  test('returns 401 when internal key is missing', async () => {
+    const res = await request(app).get('/api/v1/clients/any-client');
+    expect(res.status).toBe(401);
   });
 });

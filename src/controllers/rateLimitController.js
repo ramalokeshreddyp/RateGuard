@@ -29,6 +29,11 @@ const checkRateLimit = async (req, res, next) => {
       windowSeconds
     });
 
+    // Standard X-RateLimit-* headers (applied to all responses)
+    res.setHeader('X-RateLimit-Limit', String(maxRequests));
+    res.setHeader('X-RateLimit-Remaining', String(result.remainingRequests));
+    res.setHeader('X-RateLimit-Reset', result.resetTime);
+
     if (!result.allowed) {
       res.setHeader('Retry-After', String(result.retryAfter));
       return res.status(429).json({

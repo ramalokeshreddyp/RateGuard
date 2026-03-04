@@ -13,5 +13,6 @@ module.exports = {
   defaultMaxRequests: toInt(process.env.DEFAULT_RATE_LIMIT_MAX_REQUESTS, 100),
   defaultWindowSeconds: toInt(process.env.DEFAULT_RATE_LIMIT_WINDOW_SECONDS, 60),
   internalApiKey: process.env.INTERNAL_API_KEY || 'dev-internal-key',
-  logLevel: process.env.LOG_LEVEL || 'info'
+  logLevel: process.env.LOG_LEVEL || 'info',
+  bcryptRounds: toInt(process.env.BCRYPT_ROUNDS, 12)
 };

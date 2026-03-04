@@ -8,7 +8,7 @@ const hashApiKeyFingerprint = (apiKey) =>
   crypto.createHash('sha256').update(apiKey).digest('hex');
 
 const registerClient = async ({ clientId, apiKey, maxRequests, windowSeconds }) => {
-  const hashedApiKey = await bcrypt.hash(apiKey, 12);
+  const hashedApiKey = await bcrypt.hash(apiKey, config.bcryptRounds);
   const apiKeyFingerprint = hashApiKeyFingerprint(apiKey);
 
   const payload = {

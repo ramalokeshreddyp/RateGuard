@@ -64,7 +64,6 @@ describe('POST /api/v1/ratelimit/check', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.resetTime).toBeDefined();
-    // ISO 8601 datetime is parseable
     const date = new Date(res.body.resetTime);
     expect(date.getTime()).not.toBeNaN();
   });
@@ -133,5 +132,54 @@ describe('POST /api/v1/ratelimit/check', () => {
   test('returns 400 for invalid payload (empty strings)', async () => {
     const response = await checkLimit('', '');
     expect(response.status).toBe(400);
+  });
+
+  // X-RateLimit-* standard header tests
+  describe('X-RateLimit-* response headers', () => {
+    test('200 response includes X-RateLimit-Limit header matching maxRequests', async () => {
+      await seedClient({ clientId: 'header-limit', apiKey: 'header-limit-key-xyz01', maxRequests: 7, windowSeconds: 60 });
+
+      const res = await checkLimit('header-limit', '/v1/resource');
+
+      expect(res.status).toBe(200);
+      expect(res.headers['x-ratelimit-limit']).toBe('7');
+    });
+
+    test('200 response includes X-RateLimit-Remaining header as non-negative integer', async () => {
+      await seedClient({ clientId: 'header-remaining', apiKey: 'header-remaining-key012', maxRequests: 5, windowSeconds: 60 });
+
+      const res = await checkLimit('header-remaining', '/v1/resource');
+
+      expect(res.status).toBe(200);
+      const remaining = parseInt(res.headers['x-ratelimit-remaining'], 10);
+      expect(Number.isInteger(remaining)).toBe(true);
+      expect(remaining).toBeGreaterThanOrEqual(0);
+      expect(remaining).toBeLessThan(5);
+    });
+
+    test('200 response includes X-RateLimit-Reset header as ISO 8601 string', async () => {
+      await seedClient({ clientId: 'header-reset', apiKey: 'header-reset-key-abcde1', maxRequests: 5, windowSeconds: 60 });
+
+      const res = await checkLimit('header-reset', '/v1/resource');
+
+      expect(res.status).toBe(200);
+      const resetHeader = res.headers['x-ratelimit-reset'];
+      expect(resetHeader).toBeDefined();
+      const date = new Date(resetHeader);
+      expect(date.getTime()).not.toBeNaN();
+    });
+
+    test('429 response includes X-RateLimit-Limit, Remaining, and Reset headers', async () => {
+      await seedClient({ clientId: 'header-429', apiKey: 'header-429-key-abcdef0', maxRequests: 1, windowSeconds: 30 });
+
+      await checkLimit('header-429', '/v1/resource'); // consume token
+      const res = await checkLimit('header-429', '/v1/resource'); // 429
+
+      expect(res.status).toBe(429);
+      expect(res.headers['x-ratelimit-limit']).toBe('1');
+      const remaining = parseInt(res.headers['x-ratelimit-remaining'], 10);
+      expect(remaining).toBe(0);
+      expect(res.headers['x-ratelimit-reset']).toBeDefined();
+    });
   });
 });

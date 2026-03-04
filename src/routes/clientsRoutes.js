@@ -11,4 +11,10 @@ router.post(
   clientsController.registerClient
 );
 
+router.get(
+  '/clients/:clientId',
+  requireInternalApiKey,
+  clientsController.getClient
+);
+
 module.exports = router;
