@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=32&pause=1000&color=FF6B6B&center=true&vCenter=true&width=700&lines=⚡+RateGuard;Production-Grade+API+Rate+Limiting;Token+Bucket+%7C+Redis+%7C+Docker+%7C+CI%2FCD" alt="RateGuard Typing SVG"/>
-
 <br/>
 
 # ⚡ RateGuard
