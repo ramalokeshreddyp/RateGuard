@@ -29,13 +29,13 @@ jobs:
         run: |
           echo "Waiting for MongoDB and Redis to be healthy..."
           for i in $(seq 1 30); do
-            MONGO_HEALTH=$(docker compose ps mongo --format json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Health',''))" 2>/dev/null || echo "")
-            REDIS_HEALTH=$(docker compose ps redis --format json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Health',''))" 2>/dev/null || echo "")
-            if [ "$MONGO_HEALTH" = "healthy" ] && [ "$REDIS_HEALTH" = "healthy" ]; then
+            MONGO_OK=$(docker exec ratelimit-mongo mongosh --eval "db.runCommand('ping').ok" --quiet 2>/dev/null || echo "0")
+            REDIS_OK=$(docker exec ratelimit-redis redis-cli ping 2>/dev/null || echo "")
+            if [ "$MONGO_OK" = "1" ] && [ "$REDIS_OK" = "PONG" ]; then
               echo "All dependencies are healthy!"
               break
             fi
-            echo "Attempt $i/30 — MongoDB: $MONGO_HEALTH | Redis: $REDIS_HEALTH"
+            echo "Attempt $i/30 — MongoDB: $MONGO_OK | Redis: $REDIS_OK"
             sleep 5
           done
           docker compose ps
