@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=32&pause=1000&color=FF6B6B&center=true&vCenter=true&width=700&lines=⚡+RateGuard;Production-Grade+API+Rate+Limiting;Token+Bucket+%7C+Redis+Lua+%7C+Docker+%7C+CI%2FCD" alt="RateGuard Typing SVG"/>
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=32&pause=1000&color=FF6B6B&center=true&vCenter=true&width=700&lines=⚡+RateGuard;Production-Grade+API+Rate+Limiting;Token+Bucket+%7C+Redis+%7C+Docker+%7C+CI%2FCD" alt="RateGuard Typing SVG"/>
 
 <br/>
 
@@ -13,7 +13,7 @@
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?style=flat-square&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Stage-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Jest](https://img.shields.io/badge/Tests-43_Passing-C21325?style=flat-square&logo=jest&logoColor=white)](https://jestjs.io/)
+[![Jest](https://img.shields.io/badge/Tests-44_Passing-C21325?style=flat-square&logo=jest&logoColor=white)](https://jestjs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 <br/>
@@ -63,7 +63,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
 | Feature | Implementation |
 |---|---|
 | 🧮 Algorithm | **Token Bucket** — burst-friendly, continuously refilling |
-| ⚛️ Distributed consistency | **Redis Lua** atomic scripts — zero race conditions at scale |
+| ⚛️ Distributed consistency | **Redis Lua EVAL** — atomic token-bucket state updates across all instances |
 | 🗄️ Policy store | **MongoDB** — per-client `maxRequests` + `windowSeconds` |
 | 🔑 API key security | **bcrypt** (configurable rounds) + SHA-256 uniqueness fingerprint |
 | 📊 Standard headers | **X-RateLimit-Limit/Remaining/Reset** on every response |
@@ -98,7 +98,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
   <td>Rate State</td>
   <td>🔴 Redis</td>
   <td>7.x</td>
-  <td>In-memory atomic token bucket state via Lua EVAL</td>
+  <td>In-memory token bucket state via atomic Lua script (EVAL)</td>
 </tr>
 <tr>
   <td>Policy Store</td>
@@ -116,7 +116,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
   <td>Redis Client</td>
   <td>🔌 ioredis</td>
   <td>5.x</td>
-  <td>Redis connection + Lua EVAL execution</td>
+  <td>Redis connection + Lua script execution</td>
 </tr>
 <tr>
   <td>Validation</td>
@@ -371,7 +371,7 @@ Fields: tokens (float), lastRefill (epoch ms)
 TTL:    windowSeconds × 2000 ms  (auto-expires idle buckets)
 ```
 
-> **⚛️ Atomic guarantee:** The entire read-refill-consume-write cycle executes in a **single `EVAL` Lua call** — making it safe under any number of concurrent service instances without a single race condition.
+> **⚛️ Distributed guarantee:** The full read-refill-consume-write cycle executes atomically in Redis via Lua `EVAL`, eliminating race windows under concurrent requests. Unit tests run with `ioredis-mock` — no real Redis needed.
 
 ---
 
@@ -452,7 +452,7 @@ RateGuard/
 │   │
 │   ├── 📁 services/
 │   │   ├── clientService.js        ← bcrypt(config.bcryptRounds) + SHA-256 + MongoDB
-│   │   ├── rateLimitService.js     ← Redis Lua EVAL executor + time calculations
+│   │   ├── rateLimitService.js     ← Atomic Redis Lua EVAL token bucket (with test fallback)
 │   │   └── tokenBucketMath.js      ← Pure refill math (no I/O — fully unit testable)
 │   │
 │   └── 📁 utils/
@@ -680,14 +680,14 @@ docker compose run --rm test npm run test:integration
 ### Test results
 
 ```
- PASS  tests/unit/tokenBucketMath.test.js      (7 tests)
+ PASS  tests/unit/tokenBucketMath.test.js      (8 tests)
  PASS  tests/unit/rateLimitService.test.js      (6 tests)
  PASS  tests/integration/health.test.js         (3 tests)
  PASS  tests/integration/clients.test.js        (13 tests)
  PASS  tests/integration/ratelimit.test.js      (14 tests)
 
  Test Suites:   5 passed, 5 total
- Tests:         43 passed, 43 total
+ Tests:         44 passed, 44 total
  Time:          ~20s
 ```
 
@@ -752,7 +752,7 @@ flowchart TD
 | API key exposure | bcrypt hash (`BCRYPT_ROUNDS`, default 12) — keys never stored in plaintext |
 | Duplicate API keys | SHA-256 fingerprint with unique MongoDB index |
 | Unauthorized management | `x-internal-api-key` header gate (POST + GET /clients) |
-| Race conditions | Atomic Redis Lua `EVAL` — single operation, no TOCTOU |
+| Race conditions | Atomic Redis Lua `EVAL` token updates per key |
 | Error information leakage | Generic `"Internal server error"` for 500s; detail only in server logs |
 | HTTP header attacks | `helmet` middleware (HSTS, CSP, X-Frame-Options, etc.) |
 | Hardcoded secrets | All credentials via environment variables |
@@ -775,8 +775,8 @@ flowchart TB
 ```
 
 - **Stateless pods** — any pod can handle any request
-- **Redis Lua atomicity** — guaranteed correctness across all pods simultaneously
-- **O(1) Redis operations** — HMGET + HMSET per request, regardless of total client count
+- **Redis distributed state** — atomic Lua `EVAL` per key, correctness across all pods
+- **O(1) Redis operations** — constant time per request, regardless of total client count
 - Scale horizontally by adding more RateGuard pods behind the load balancer
 
 ---

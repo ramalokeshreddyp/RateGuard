@@ -17,7 +17,7 @@
 3. [Layered Architecture](#3-layered-architecture)
 4. [Module Responsibilities](#4-module-responsibilities)
 5. [Why Token Bucket?](#5-why-token-bucket)
-6. [Lua Script — Atomic Rate Decision](#6-lua-script--atomic-rate-decision)
+6. [Redis Lua Atomic Decision](#6-redis-lua-atomic-decision)
 7. [Request Lifecycle Diagrams](#7-request-lifecycle-diagrams)
 8. [Data Design](#8-data-design)
 9. [API Design Decisions](#9-api-design-decisions)
@@ -45,7 +45,7 @@ mindmap
       One-command setup
     Algorithm
       Token Bucket
-      Redis Lua EVAL
+            Redis Lua Atomic EVAL
       Burst tolerance
       Constant-time state per client
     Storage
@@ -112,7 +112,7 @@ flowchart TB
 
         subgraph Svc["Services"]
             CS["clientService\nbcrypt(bcryptRounds) · SHA-256 · Mongo"]
-            RLS["rateLimitService\nRedis Lua executor"]
+            RLS["rateLimitService\nAtomic Redis Lua EVAL executor"]
             TBM["tokenBucketMath\nPure math (no I/O)"]
         end
     end
@@ -166,7 +166,7 @@ flowchart LR
 | **Transport** | Express 4, Helmet, pino-http | HTTP routing, security headers, structured request logging |
 | **Middleware** | Joi, custom auth, errorHandler | Input validation → 400, auth gate → 401, error normalisation |
 | **Controllers** | Express handlers | Use-case orchestration, HTTP response shaping + X-RateLimit-* headers |
-| **Services** | bcrypt, ioredis, Lua, crypto | Business logic: register client, evaluate rate limit |
+| **Services** | bcrypt, ioredis, JS, crypto | Business logic: register client, evaluate rate limit |
 | **Models** | Mongoose | MongoDB schema + unique index enforcement |
 | **Data** | MongoDB 7, Redis 7 | Persistent policy store + ephemeral rate state |
 | **Infra** | Docker Compose, GitHub Actions | Reproducible environments, CI/CD automation |
@@ -201,7 +201,7 @@ flowchart TD
 
     subgraph svc["services/"]
         CSS["clientService.js\nregisterClient():\n  bcrypt.hash(apiKey, config.bcryptRounds)\n  sha256(apiKey) → fingerprint\n  Client.create()\ngetClientByClientId():\n  findOne({clientId}).lean()"]
-        RLS["rateLimitService.js\ncheckRateLimit():\n  Build Redis key (base64url path)\n  EVAL Lua script\n  Calculate resetTime + retryAfter\n  Return normalized result"]
+        RLS["rateLimitService.js\ncheckRateLimit():\n  Build Redis key (base64url path)\n  EVAL Lua (atomic refill + consume + persist + ttl)\n  Parse result → allowed + tokens\n  Calculate resetTime + retryAfter\n  Return normalized result"]
         TBM["tokenBucketMath.js\ncalculateTokenBucket():\n  PURE FUNCTION — no I/O\n  Handles undefined state\n  Caps at capacity\n  Returns {allowed, tokens, lastRefillMs}"]
     end
 
@@ -243,15 +243,16 @@ quadrantChart
 |---|---|---|---|---|
 | Burst handling | ✅ Up to capacity | ❌ Boundary bursts | ✅ Yes | ❌ Smoothed only |
 | Memory per client | ✅ O(1) — 2 fields | ✅ O(1) | ❌ O(n) — timestamp log | ✅ O(1) |
-| Atomic Redis update | ✅ HMSET | ⚠️ INCR + expiry | ❌ ZADD + ZRANGE | ✅ HMSET |
-| Race-condition safe | ✅ via Lua EVAL | ⚠️ Needs WATCH | ✅ via Lua | ✅ via Lua |
+| Atomic Redis update | ✅ Lua EVAL | ⚠️ INCR + expiry | ✅ Lua EVAL | ✅ Lua EVAL |
+| Race-condition safe | ✅ yes (single Redis script) | ⚠️ Needs WATCH | ✅ via Lua | ✅ via Lua |
 | Real-world feel | ✅ Natural | ⚠️ Reset spikes | ✅ Smooth | ⚠️ Rigid |
 | Implementation complexity | Low | Very Low | High | Low |
 
 **Token Bucket was chosen** because:
 1. Allows controlled bursting — real API clients send traffic in bursts, not at perfectly even intervals
 2. Stores exactly **two fields per Redis key** — maximally memory-efficient
-3. Integrates naturally with Redis atomic Lua — single EVAL call covers refill + consume
+3. Uses a single Redis Lua `EVAL` for atomic updates under concurrency, constant O(1) time
+4. `tokenBucketMath.js` pure JS math can be unit-tested with `ioredis-mock` without any Redis setup
 
 ### Mathematical Definition
 
@@ -277,43 +278,20 @@ TTL:          windowSeconds × 2000 ms
 
 ---
 
-## 6. Lua Script — Atomic Rate Decision
+## 6. Redis Lua Atomic Decision
 
-The entire **read → refill → consume → write** cycle executes inside a single `redis.call('EVAL', ...)`, making it safe under any level of concurrency without locks:
+The **read → refill → consume → write** cycle runs atomically inside Redis as one Lua script call:
 
-```lua
-local key         = KEYS[1]
-local now         = tonumber(ARGV[1])   -- current time (epoch ms)
-local capacity    = tonumber(ARGV[2])   -- maxRequests
-local refillPerMs = tonumber(ARGV[3])   -- tokens per millisecond
-local requested   = tonumber(ARGV[4])   -- always 1
-local ttlMs       = tonumber(ARGV[5])   -- windowSeconds × 2000
-
--- 1. Load current state (or use defaults for new buckets)
-local data       = redis.call('HMGET', key, 'tokens', 'lastRefill')
-local tokens     = tonumber(data[1]) or capacity
-local lastRefill = tonumber(data[2]) or now
-
--- 2. Refill based on elapsed time
-if now > lastRefill then
-  local delta  = now - lastRefill
-  local refill = delta * refillPerMs
-  tokens       = math.min(capacity, tokens + refill)
-  lastRefill   = now
-end
-
--- 3. Consume or deny
-local allowed = 0
-if tokens >= requested then
-  tokens  = tokens - requested
-  allowed = 1
-end
-
--- 4. Persist new state + refresh TTL
-redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', lastRefill)
-redis.call('PEXPIRE', key, ttlMs)
-
-return { allowed, tokens, lastRefill }
+```js
+const [allowedRaw, tokensRaw] = await redisClient.eval(
+    TOKEN_BUCKET_LUA_SCRIPT,
+    1,
+    key,
+    String(nowMs),
+    String(maxRequests),
+    String(refillPerMs),
+    String(ttlMs)
+);
 ```
 
 **Redis key structure:**
@@ -352,10 +330,10 @@ sequenceDiagram
     CS-->>RC: client doc
     RC->>RLS: checkRateLimit({clientId, path, maxRequests:100, windowSeconds:60})
     Note over RLS: Build key, compute refillPerMs, TTL
-    RLS->>RDS: EVAL Lua(key, now, capacity, refillPerMs, 1, ttlMs)
-    Note over RDS: Atomic: HMGET → refill → consume → HMSET → PEXPIRE
-    RDS-->>RLS: [allowed=1, tokens=99.3, lastRefill=1740000001234]
-    RLS-->>RC: {allowed:true, remainingRequests:99, retryAfter:0, resetTime:"..."}
+    RLS->>RDS: EVAL Lua script with key + args
+    Note over RDS: Atomic refill + consume + persist + ttl (O(1))
+    RDS-->>RLS: [allowed=1, tokens=99.3, lastRefill=1740000000000]
+    RLS-->>RC: {allowed:true, remainingRequests:99, retryAfter:1, resetTime:"..."}
     RC->>RC: setHeader('X-RateLimit-Limit', '100')<br/>setHeader('X-RateLimit-Remaining', '99')<br/>setHeader('X-RateLimit-Reset', resetTime)
 
     alt ✅ Allowed
@@ -566,7 +544,7 @@ flowchart TD
 | API key exposure | Irreversible hashing | bcrypt (`config.bcryptRounds`, default 12) via `bcryptjs` |
 | Duplicate API key bypass | Uniqueness fingerprint | SHA-256 → unique MongoDB index |
 | Unauthorized client management | Header gate | `x-internal-api-key` middleware on all `/clients` routes |
-| Concurrent race conditions | Atomic operations | Redis Lua `EVAL` — single operation |
+| Concurrent race conditions | Atomic operations | Redis Lua `EVAL` for refill+consume+persist in one script |
 | Error information leakage | Response masking | 500s return generic string only |
 | HTTP header attacks | Security headers | `helmet` middleware |
 | Credential hardcoding | Environment variables | All secrets via `process.env`; documented in `.env.example` |
@@ -651,8 +629,9 @@ flowchart LR
 
 **.dockerignore** ensures the build context is lean by excluding:
 ```
-node_modules / .git / .env* / tests/ / *.md / *.log / coverage/
+node_modules / .git / .env* / *.log / coverage/
 ```
+> **Note:** `tests/` and `*.test.js` are intentionally NOT excluded — the `test` Docker stage needs them. The production `runner` stage only copies `src/` explicitly, keeping the final image lean.
 
 ---
 
@@ -678,7 +657,7 @@ flowchart TB
 
 **Why horizontal scaling works:**
 1. **No in-process state** — app pods carry zero rate-limit memory
-2. **Redis Lua atomicity** — regardless of which pod processes a request, the Lua script executes atomically on the Redis primary
+2. **Redis distributed state** — single atomic Lua `EVAL` per key, correctness across all pods
 3. **Consistent policy reads** — MongoDB is read-only in the hot path (policy lookup); writes only happen on client registration
 4. **Stateless health checks** — `/health` endpoint checks external dependencies, not local state
 
@@ -686,9 +665,9 @@ flowchart TB
 
 | Operation | Redis Command | Time Complexity |
 |---|---|---|
-| Read + write bucket state | `HMGET` + `HMSET` | O(1) |
-| Set TTL | `PEXPIRE` | O(1) |
-| Total per check request | `EVAL` (single roundtrip) | O(1) |
+| Atomic bucket decision | `EVAL` (Lua script) | O(1) |
+| Script internals | `HMGET` + `HMSET` + `PEXPIRE` | O(1) |
+| Total per check request | one Redis roundtrip | O(1) |
 
 ---
 
@@ -731,7 +710,7 @@ Current log format (pino structured JSON):
 
 | Advantage | Detail |
 |---|---|
-| **Distributed correctness** | Redis Lua atomicity prevents over-counting under any concurrency |
+| **Distributed correctness** | Redis Lua atomic update prevents over-counting under concurrency |
 | **Horizontal scalability** | Stateless pods + shared Redis state = infinite horizontal scale |
 | **Burst tolerance** | Token Bucket naturally handles bursty real-world API traffic |
 | **Separation of concerns** | Policy (Mongo) vs. state (Redis) vs. logic (Node.js) clearly separated |
