@@ -4,7 +4,7 @@
 
 > Complete technical documentation covering the problem, solution, design rationale, module breakdown, data flow, testing strategy, and production readiness of the RateGuard API Rate Limiting Microservice.
 
-**Version:** 1.0.0 &nbsp;|&nbsp; **Last Updated:** March 2026 &nbsp;|&nbsp; **Status:** Production-Ready
+**Version:** 2.0.0 &nbsp;|&nbsp; **Last Updated:** March 2026 &nbsp;|&nbsp; **Status:** Production-Ready
 
 </div>
 
@@ -41,17 +41,17 @@
 | **Domain** | API Rate Limiting, Distributed Systems |
 | **Stack** | Node.js · Express · Redis · MongoDB · Docker · GitHub Actions |
 | **Algorithm** | Token Bucket (Redis Lua atomic) |
-| **Tests** | 27 (8 unit + 19 integration) |
+| **Tests** | 43 (13 unit + 30 integration) across 5 test suites |
 | **Repository** | [github.com/ramalokeshreddyp/RateGuard](https://github.com/ramalokeshreddyp/RateGuard) |
 
-**RateGuard** is a dedicated, high-performance, stateless microservice designed to be the centralized rate-limiting enforcement layer in any API ecosystem. It acts as a gatekeeper that upstream services (API gateways, reverse proxies) consult before forwarding requests to backend services.
+**RateGuard** is a dedicated, high-performance, stateless microservice designed to be the centralized rate-limiting enforcement layer in any API ecosystem. It acts as a gatekeeper that upstream services (API gateways, reverse proxies) consult before forwarding requests to backend services. It emits industry-standard `X-RateLimit-*` response headers so clients can implement polite retry logic without extra configuration.
 
 ```mermaid
 flowchart LR
     GW[/"🌐 Client Request"/] --> AG["⚖️ API Gateway"]
     AG -->|"Before forwarding"| RG["⚡ RateGuard\nRate check"]
-    RG -->|"✅ 200 allowed=true"| AG
-    RG -->|"🚫 429 allowed=false"| AG
+    RG -->|"✅ 200 allowed=true\nX-RateLimit-Remaining: 9"| AG
+    RG -->|"🚫 429 allowed=false\nRetry-After: 36"| AG
     AG -->|"✅ Forward"| BE["🖥️ Backend Service"]
     AG -->|"🚫 Reject"| GW
 ```
@@ -88,7 +88,7 @@ mindmap
       Fixed window has edge-case bursts
 ```
 
-**The core technical barrier:**  
+**The core technical barrier:**
 Implementing rate limiting directly inside application services works fine for a single instance but **breaks immediately when scaled horizontally** — each pod maintains independent counters, allowing clients to multiply their quota by the number of running instances.
 
 ### Requirements
@@ -99,6 +99,7 @@ The solution must:
 - ✅ Be **fast** — add minimal latency to the request path (sub-5ms)
 - ✅ Support **per-client, per-endpoint** granularity
 - ✅ Allow **configurable** limits per client
+- ✅ Emit **standard `X-RateLimit-*` headers** on every response
 - ✅ Expose a **simple HTTP API** consumable by any upstream service
 - ✅ Be **containerized** for easy deployment
 - ✅ Have a **CI/CD pipeline** for automated testing and delivery
@@ -118,8 +119,9 @@ flowchart TD
     A3["✅ Option 3: Dedicated Redis microservice\nAtomic Lua scripts, in-memory speed"] --> CHOSEN["RateGuard Architecture"]
 
     CHOSEN --> C1["Stateless Node.js app\n(horizontal scale)"]
-    CHOSEN --> C2["Redis for rate state\n(atomic Lua)"]
+    CHOSEN --> C2["Redis for rate state\n(atomic Lua EVAL)"]
     CHOSEN --> C3["MongoDB for client config\n(persistent policies)"]
+    CHOSEN --> C4["Standard X-RateLimit-* headers\n(RFC 6585-compatible)"]
 ```
 
 ### Key Decisions
@@ -129,10 +131,12 @@ flowchart TD
 | **Rate state storage** | Redis (in-memory) | MongoDB counters | Redis is 10-100× faster for read-modify-write |
 | **Atomicity mechanism** | Lua `EVAL` | `MULTI/EXEC` transaction | Lua EVAL is simpler, executes as single command on Redis primary |
 | **Algorithm** | Token Bucket | Fixed Window, Sliding Log | Burst-tolerant, O(1) memory, naturally fits Redis HMSET |
-| **Client config storage** | MongoDB | MySQL, PostgreSQL | Already in stack; excellent for flexible per-client config documents |
-| **API framework** | Express.js | Fastify, NestJS | Lightweight, well-understood, minimal overhead for proxy-style service |
+| **Client config storage** | MongoDB | MySQL, PostgreSQL | Flexible per-client config documents; unique index support |
+| **API framework** | Express.js | Fastify, NestJS | Lightweight, minimal overhead for proxy-style service |
 | **Logging** | Pino | Winston, Morgan | Fastest Node.js logger, structured JSON without config overhead |
-| **Container** | Multi-stage Dockerfile | Single-stage | Smaller, more secure production image (~80MB vs ~300MB) |
+| **Container** | 4-stage Dockerfile + .dockerignore | Single-stage | Smaller, more secure production image (~80MB vs ~300MB) |
+| **Rate headers** | X-RateLimit-Limit/Remaining/Reset | Custom headers | Industry standard — compatible with all major HTTP clients |
+| **bcrypt cost** | Configurable via env (`BCRYPT_ROUNDS`) | Hardcoded 12 | Allows fast test runs (rounds=4) and secure prod (rounds=12) |
 
 ---
 
@@ -151,13 +155,13 @@ flowchart LR
     end
 
     subgraph Quality["Quality Layer"]
-        J["🧪 Jest + Supertest\n• Unit tests (no I/O)\n• Integration tests (real DB)\n• RunInBand for test isolation"]
+        J["🧪 Jest + Supertest + ioredis-mock\n• Unit tests (no infra) via ioredis-mock\n• Integration tests (real DB/Redis)\n• RunInBand for test isolation\n• 43 total tests across 5 suites"]
         JO["✅ Joi\n• Declarative schema validation\n• Rich error messages\n• Composable & reusable"]
     end
 
     subgraph Ops["Operations Layer"]
-        D["🐳 Docker\n• Multi-stage build\n• Consistent environments\n• Minimal prod image"]
-        GH["⚙️ GitHub Actions\n• Native to GitHub\n• Free for public repos\n• Secrets management built-in"]
+        D["🐳 Docker\n• 4-stage multi-stage build\n• .dockerignore lean context\n• Consistent environments\n• Minimal prod image"]
+        GH["⚙️ GitHub Actions\n• Native to GitHub\n• Free for public repos\n• Buildx + GHA cache\n• Secrets management built-in"]
     end
 ```
 
@@ -169,7 +173,9 @@ flowchart LR
 
 **MongoDB 7** — Client rate-limit policies (maxRequests, windowSeconds) are write-rarely, read-frequently data. MongoDB's document model and automatic `timestamps` option map perfectly. Unique compound indexes on `clientId` and `apiKeyFingerprint` enforce data integrity at the database level.
 
-**bcryptjs** — Passwords and API keys must be stored as irreversible hashes. bcrypt's deliberate computational cost (cost factor 12 ≈ 300-500ms hash time) makes brute-force attacks computationally infeasible. SHA-256 fingerprinting enables fast O(1) uniqueness checks without the bcrypt overhead.
+**bcryptjs** — Passwords and API keys must be stored as irreversible hashes. bcrypt's deliberate computational cost (cost factor 12 ≈ 300-500ms hash time) makes brute-force attacks computationally infeasible. The `BCRYPT_ROUNDS` environment variable allows the test service to use cost factor 4 (fast) while production stays at 12+.
+
+**ioredis-mock** — Enables unit testing the Redis Lua-based `rateLimitService` without a real Redis instance. The mock correctly simulates `HMGET`/`HMSET`/`PEXPIRE` and Lua `EVAL` behavior, allowing 6 unit tests to run in milliseconds without any Docker dependency.
 
 **Pino** — At 5-6× faster than Winston, Pino's JSON output integrates seamlessly with log aggregation stacks (Elasticsearch, Datadog, CloudWatch). The `pino-http` middleware automatically logs every request with latency and status code.
 
@@ -184,16 +190,17 @@ C4Context
     title System Context — RateGuard
 
     Person(gw, "API Gateway", "Upstream service that calls RateGuard before forwarding requests")
-    Person(adm, "Platform Admin", "Registers API clients with their rate limit configurations")
+    Person(adm, "Platform Admin", "Registers and inspects API clients with rate limit configurations")
 
     System_Boundary(rg, "RateGuard System") {
-        System(api, "RateGuard API", "Stateless Node.js microservice exposing rate-limit check and client registration endpoints")
+        System(api, "RateGuard API", "Stateless Node.js microservice exposing rate-limit check, client registration, and client inspection endpoints")
         SystemDb(redis, "Redis", "Stores token bucket state per clientId+path combination")
         SystemDb(mongo, "MongoDB", "Stores client policies including hashed API keys and rate limit settings")
     }
 
     Rel(gw, api, "POST /api/v1/ratelimit/check", "JSON over HTTPS")
-    Rel(adm, api, "POST /api/v1/clients", "JSON over HTTPS + x-internal-api-key")
+    Rel(adm, api, "POST /api/v1/clients (register)", "JSON over HTTPS + x-internal-api-key")
+    Rel(adm, api, "GET /api/v1/clients/:id (inspect)", "HTTPS + x-internal-api-key")
     Rel(api, redis, "EVAL Lua (HMGET/HMSET/PEXPIRE)", "ioredis")
     Rel(api, mongo, "findOne / create", "Mongoose")
 ```
@@ -213,15 +220,16 @@ flowchart TB
         end
 
         subgraph Core["Route Handlers"]
-            CC["clientsController"]
-            RC["rateLimitController"]
+            CC["POST /api/v1/clients\nclientsController.registerClient"]
+            GC["GET /api/v1/clients/:id\nclientsController.getClient"]
+            RC["POST /api/v1/ratelimit/check\nrateLimitController\n+ X-RateLimit-* headers"]
             HC["GET /health"]
         end
 
         subgraph SVC["Services"]
             CS["clientService\n(bcrypt, SHA-256, Mongoose)"]
             RLS["rateLimitService\n(ioredis Lua EVAL)"]
-            TBM["tokenBucketMath\n(pure function)"]
+            TBM["tokenBucketMath\n(pure function — ioredis-mock testable)"]
         end
     end
 
@@ -231,7 +239,7 @@ flowchart TB
     end
 
     GW --> MW --> RC --> RLS --> RDS
-    ADM --> MW --> CC --> CS --> MDB
+    ADM --> MW --> CC & GC --> CS --> MDB
     RC -.-> CS
     RLS -.-> TBM
 ```
@@ -252,13 +260,14 @@ module.exports = {
   defaultMaxRequests:    toInt(process.env.DEFAULT_RATE_LIMIT_MAX_REQUESTS, 100),
   defaultWindowSeconds:  toInt(process.env.DEFAULT_RATE_LIMIT_WINDOW_SECONDS, 60),
   internalApiKey:        process.env.INTERNAL_API_KEY,
-  logLevel:              process.env.LOG_LEVEL || 'info'
+  logLevel:              process.env.LOG_LEVEL || 'info',
+  bcryptRounds:          toInt(process.env.BCRYPT_ROUNDS, 12)   // configurable cost factor
 };
 ```
 
 ### src/services/tokenBucketMath.js — Pure Algorithm
 
-Deliberately decoupled from Redis so the math can be unit-tested without any infrastructure. Accepts previous state, returns next state.
+Deliberately decoupled from Redis so the math can be unit-tested without any infrastructure:
 
 ```
 Input:  {nowMs, capacity, refillPerMs, requested, previousTokens, previousRefillMs}
@@ -275,21 +284,32 @@ Bridges the pure math and Redis reality:
 1. Builds the Redis key (`ratelimit:{clientId}:{base64url(path)}`)
 2. Calls `redis.eval(LUA_SCRIPT, ...)` with computed parameters
 3. Calculates human-readable `resetTime` and `retryAfter` from raw Redis output
-4. Returns a normalized result object
+4. Returns a normalized result object — `retryAfter` guaranteed ≥ 1 when denied
 
 ### src/services/clientService.js — Client Lifecycle
 
 Handles the full client registration pipeline:
-1. `bcrypt.hash(apiKey, 12)` — async, ~300ms, returns 60-char hash
+1. `bcrypt.hash(apiKey, config.bcryptRounds)` — async, configurable cost
 2. `crypto.createHash('sha256').update(apiKey).digest('hex')` — sync fingerprint
 3. `Client.create(...)` — atomic Mongoose insert; MongoDB enforces unique indexes
 4. Maps `MongoServerError code 11000` → `ApiError(409)` for clean error propagation
+
+### src/controllers/rateLimitController.js — Response Shaping + Headers
+
+Beyond orchestrating the rate-limit check, this controller sets standard headers on **every** rate-limit response:
+
+```javascript
+res.setHeader('X-RateLimit-Limit',     String(maxRequests));
+res.setHeader('X-RateLimit-Remaining', String(result.remainingRequests));
+res.setHeader('X-RateLimit-Reset',     result.resetTime);
+// + Retry-After on 429 only
+```
 
 ### src/middleware/ — Cross-Cutting Concerns
 
 | File | Trigger | Output |
 |---|---|---|
-| `authInternal.js` | Every `/api/v1/clients` request | `401` if header missing or wrong |
+| `authInternal.js` | Every `/api/v1/clients` request (POST + GET) | `401` if header missing or wrong |
 | `validate.js` | Every route with a schema | `400` with field-level Joi error if schema fails |
 | `errorHandler.js` | Any `next(error)` call | `4xx` with message, `500` with generic string + internal log |
 
@@ -307,13 +327,13 @@ flowchart TD
 
     B["📝 pino-http logs request\nGenerates or propagates x-request-id"] --> C
 
-    C["✅ Joi validates body\nclientId: string, min:3, max:100, trimmed\npath: string, min:1, max:500, trimmed"] --> D1 & D2
+    C["✅ Joi validates body\nclientId: string, min:3, max:100, trimmed\npath: string, min:1, max:500, trimmed"] --> D1
 
     D1{Valid?}
     D1 -->|"❌ No"| R400(["400 Bad Request\n{message: 'validation error details'}"])
     D1 -->|"✅ Yes"| D2
 
-    D2["🗄️ MongoDB lookup\ndb.clients.findOne({clientId: 'acme'})"] --> E1 & E2
+    D2["🗄️ MongoDB lookup\ndb.clients.findOne({clientId: 'acme'})"] --> E1
 
     E1{Found?}
     E1 -->|"❌ No"| R404(["404 Not Found\n{message: 'Client not found'}"])
@@ -328,8 +348,8 @@ flowchart TD
     H["♻️ Lua: HMGET → refill → consume → HMSET → PEXPIRE\n(single atomic operation)"] --> I
 
     I{allowed?}
-    I -->|"✅ tokens ≥ 1"| R200(["200 OK\n{allowed:true,\nremainingRequests: ⌊tokens⌋,\nresetTime: ISO 8601}"])
-    I -->|"🚫 tokens < 1"| R429(["429 Too Many Requests\nRetry-After: N header\n{allowed:false,\nretryAfter: N,\nresetTime: ISO 8601}"])
+    I -->|"✅ tokens ≥ 1"| R200(["200 OK\nX-RateLimit-Limit: maxRequests\nX-RateLimit-Remaining: ⌊tokens⌋\nX-RateLimit-Reset: ISO 8601\n{allowed:true, remainingRequests, resetTime}"])
+    I -->|"🚫 tokens < 1"| R429(["429 Too Many Requests\nRetry-After: ⌈seconds⌉\nX-RateLimit-Limit: maxRequests\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: ISO 8601\n{allowed:false, retryAfter, resetTime}"])
 
     style START fill:#1565C0,color:#fff
     style R400 fill:#e65100,color:#fff
@@ -364,8 +384,19 @@ stateDiagram-v2
 | Method | Endpoint | Auth | Purpose | Success |
 |---|---|---|---|---|
 | `POST` | `/api/v1/clients` | `x-internal-api-key` | Register a new API client | `201` |
+| `GET` | `/api/v1/clients/:clientId` | `x-internal-api-key` | Inspect a client's rate-limit config | `200` |
 | `POST` | `/api/v1/ratelimit/check` | None | Check rate limit for clientId+path | `200` or `429` |
 | `GET` | `/health` | None | Service health status | `200` |
+
+### Response Headers on Rate-Limit Responses
+
+| Header | Present on | Value |
+|---|---|---|
+| `X-RateLimit-Limit` | 200 + 429 | Client's configured `maxRequests` |
+| `X-RateLimit-Remaining` | 200 + 429 | Remaining tokens (floored integer, 0 on 429) |
+| `X-RateLimit-Reset` | 200 + 429 | ISO 8601 datetime of bucket reset |
+| `Retry-After` | 429 only | Integer seconds until next allowed request (≥ 1) |
+| `Content-Type` | All | `application/json` |
 
 ### Error Response Matrix
 
@@ -378,16 +409,6 @@ stateDiagram-v2
 | Duplicate clientId or apiKey | `409` | `{"message": "clientId or apiKey already exists"}` |
 | Rate limit exceeded | `429` | `{"allowed":false,"retryAfter":36,"resetTime":"..."}` |
 | Internal error | `500` | `{"message": "Internal server error"}` |
-
-### Response Headers
-
-| Header | Condition | Value |
-|---|---|---|
-| `Retry-After` | `429` response | Integer seconds until next allowed request |
-| `Content-Type` | All responses | `application/json` |
-| `X-Content-Type-Options` | All (via Helmet) | `nosniff` |
-| `X-Frame-Options` | All (via Helmet) | `SAMEORIGIN` |
-| `Strict-Transport-Security` | All (via Helmet) | `max-age=15552000; includeSubDomains` |
 
 ---
 
@@ -433,8 +454,10 @@ When a 429 is returned:
 ```
 tokensNeeded = 1 - currentTokens          (tokens required for next request)
 msUntilNext  = tokensNeeded / refillPerMs (milliseconds until enough refilled)
-retryAfter   = ceil(msUntilNext / 1000)   (rounded up to whole seconds)
+retryAfter   = max(1, ceil(msUntilNext / 1000))   (rounded up, minimum 1)
 ```
+
+> The `max(1, ...)` ensures `retryAfter` is always at least 1 second — preventing clients from immediately retrying.
 
 ---
 
@@ -447,21 +470,23 @@ flowchart TD
     subgraph Threats["🎯 Identified Threats"]
         T1["API key theft from database"]
         T2["Duplicate API key registration"]
-        T3["Unauthorized client provisioning"]
+        T3["Unauthorized client provisioning/inspection"]
         T4["Race conditions under concurrency"]
         T5["Error message information disclosure"]
         T6["HTTP header vulnerabilities"]
         T7["Credential hardcoding in source"]
+        T8["Brute-force api key attacks"]
     end
 
     subgraph Mitigations["🛡️ Mitigations"]
-        M1["bcrypt hash (cost 12)\nIrreversible, slow-brute-force"]
+        M1["bcrypt hash (config.bcryptRounds, default 12)\nIrreversible, slow-brute-force"]
         M2["SHA-256 fingerprint\nUnique MongoDB index"]
-        M3["x-internal-api-key header gate\nMiddleware before all routes"]
+        M3["x-internal-api-key header gate\nMiddleware before POST + GET /clients"]
         M4["Redis Lua EVAL atomicity\nSingle-operation, no TOCTOU"]
         M5["Generic 500 message\nFull detail in server logs only"]
         M6["Helmet middleware\nHSTS, CSP, X-Frame-Options"]
-        M7["Environment variables only\n.env.example documents all"]
+        M7["Environment variables only\n.env.example documents all with comments"]
+        M8["bcrypt cost factor ≥ 12 in prod\nConfigurable via BCRYPT_ROUNDS"]
     end
 
     T1 --> M1
@@ -471,6 +496,7 @@ flowchart TD
     T5 --> M5
     T6 --> M6
     T7 --> M7
+    T8 --> M8
 ```
 
 ### API Key Security Deep Dive
@@ -484,14 +510,14 @@ sequenceDiagram
     participant MDB as MongoDB
 
     ADM->>SVC: registerClient({apiKey: "super-secret-key-123"})
-    SVC->>BCR: bcrypt.hash("super-secret-key-123", 12)
-    Note over BCR: ~300ms computation<br/>Salt automatically embedded<br/>60-char output
+    SVC->>BCR: bcrypt.hash("super-secret-key-123", config.bcryptRounds)
+    Note over BCR: ~300ms computation (rounds=12)<br/>Salt automatically embedded<br/>60-char output
     BCR-->>SVC: "$2a$12$uWQkacQ7I2W6b0r4..."
     SVC->>SHA: sha256("super-secret-key-123")
     Note over SHA: Instant, deterministic<br/>64-char hex output
     SHA-->>SVC: "52f327f2ac3443f5..."
     SVC->>MDB: insert {hashedApiKey: "$2a$12$...", apiKeyFingerprint: "52f327..."}
-    Note over MDB: Original apiKey is NEVER stored<br/>apiKey is NOT returned in response
+    Note over MDB: Original apiKey is NEVER stored<br/>apiKey is NOT returned in response<br/>apiKeyFingerprint ensures global uniqueness
 ```
 
 ---
@@ -502,44 +528,65 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    subgraph Tests["Test Suite — 27 Total"]
+    subgraph Tests["Test Suite — 43 Total across 5 Suites"]
 
         subgraph Unit["🧪 Unit Tests — tests/unit/\n(No infrastructure required)"]
-            UT1["tokenBucketMath.test.js\n8 tests — pure function"]
+            UT1["tokenBucketMath.test.js — 7 tests\nPure function, no mocks needed"]
             UT1 --> UC1["✅ Allows when tokens available"]
             UT1 --> UC2["✅ Blocks when tokens exhausted"]
             UT1 --> UC3["✅ Refills properly over time"]
             UT1 --> UC4["✅ Defaults to full bucket (undefined state)"]
             UT1 --> UC5["✅ Caps at capacity (no overflow)"]
             UT1 --> UC6["✅ Fractional block (2.9 < 3 requested)"]
-            UT1 --> UC7["✅ Zero elapsed → zero refill"]
-            UT1 --> UC8["✅ lastRefillMs = nowMs on output"]
+            UT1 --> UC7["✅ Zero elapsed → zero refill + lastRefillMs check"]
+
+            UT2["rateLimitService.test.js — 6 tests\nioredis-mock — no real Redis needed"]
+            UT2 --> UC8["✅ First request allowed"]
+            UT2 --> UC9["✅ Remaining decreases on each call"]
+            UT2 --> UC10["✅ Denied when exhausted"]
+            UT2 --> UC11["✅ retryAfter ≥ 1 when denied"]
+            UT2 --> UC12["✅ resetTime is valid ISO 8601"]
+            UT2 --> UC13["✅ Different paths tracked independently"]
         end
 
         subgraph Integration["🔗 Integration Tests — tests/integration/\n(Live MongoDB + Redis containers)"]
-            subgraph ClientsTest["clients.test.js — 9 tests"]
+            subgraph HealthTest["health.test.js — 3 tests"]
+                HT1["✅ GET /health → 200 with mongoOk + redisOk"]
+                HT2["✅ Unknown GET route → 404"]
+                HT3["✅ Unknown POST route → 404"]
+            end
+
+            subgraph ClientsTest["clients.test.js — 13 tests"]
                 CT1["✅ 201 on valid registration"]
                 CT2["✅ Default maxRequests/windowSeconds applied"]
                 CT3["✅ apiKey not in response body"]
-                CT4["✅ 409 on duplicate clientId"]
-                CT5["✅ 409 on duplicate apiKey (same key, diff clientId)"]
-                CT6["✅ 400 on empty clientId"]
-                CT7["✅ 400 on missing clientId entirely"]
-                CT8["✅ 401 on missing x-internal-api-key"]
-                CT9["✅ 401 on wrong x-internal-api-key"]
+                CT4["✅ 409 duplicate clientId"]
+                CT5["✅ 409 duplicate apiKey (diff clientId)"]
+                CT6["✅ 400 invalid payload"]
+                CT7["✅ 400 missing clientId"]
+                CT8["✅ 401 missing internal key"]
+                CT9["✅ 401 wrong internal key"]
+                CT10["✅ GET 200 correct body"]
+                CT11["✅ GET 200 no key material exposed"]
+                CT12["✅ GET 404 unknown clientId"]
+                CT13["✅ GET 401 missing internal key"]
             end
 
-            subgraph RatelimitTest["ratelimit.test.js — 10 tests"]
-                RT1["✅ allow → allow → deny sequence (maxRequests=2)"]
+            subgraph RatelimitTest["ratelimit.test.js — 14 tests"]
+                RT1["✅ allow → allow → deny sequence"]
                 RT2["✅ remainingRequests is integer on 200"]
                 RT3["✅ resetTime is valid ISO 8601 on 200"]
                 RT4["✅ resetTime is valid ISO 8601 on 429"]
-                RT5["✅ Per-path isolation (path-A exhausted, path-B fresh)"]
-                RT6["✅ Retry-After header is positive integer string on 429"]
+                RT5["✅ Per-path isolation"]
+                RT6["✅ Retry-After header is positive integer string"]
                 RT7["✅ 404 for unknown clientId"]
-                RT8["✅ 400 when clientId missing"]
-                RT9["✅ 400 when path missing"]
-                RT10["✅ 400 for empty string body"]
+                RT8["✅ 400 missing clientId"]
+                RT9["✅ 400 missing path"]
+                RT10["✅ 400 empty string body"]
+                RT11["✅ X-RateLimit-Limit matches maxRequests on 200"]
+                RT12["✅ X-RateLimit-Remaining is non-negative integer on 200"]
+                RT13["✅ X-RateLimit-Reset is valid ISO 8601 on 200"]
+                RT14["✅ All three X-RateLimit headers present on 429"]
             end
         end
     end
@@ -551,10 +598,10 @@ flowchart TD
 ### Test Execution
 
 ```bash
-# Run all 27 tests inside Docker (recommended — exact CI environment)
+# Run all 43 tests inside Docker (recommended — exact CI environment)
 docker compose run --rm test npm run test:all
 
-# Run only unit tests (no Docker needed locally)
+# Run only unit tests (no Docker needed — ioredis-mock handles Redis)
 npm run test:unit
 
 # Run only integration tests (requires live Mongo + Redis)
@@ -581,19 +628,19 @@ flowchart LR
     subgraph DockerCompose["docker-compose.yml — 4 Services"]
 
         subgraph AppSvc["app service"]
-            A1["Build: target=runner\nPort: 3000:3000\nDepends: mongo ✓, redis ✓\nHealthcheck: curl /health"]
+            A1["Build: target=runner\nPort: 3000:3000\nDepends: mongo ✓, redis ✓\nrestart: on-failure\nBCRYPT_ROUNDS=12\nHealthcheck: curl /health\nstart_period: 15s"]
         end
 
         subgraph TestSvc["test service"]
-            T1["Build: target=test\nNo port exposed\nDepends: mongo ✓, redis ✓\nCmd: npm run test:all"]
+            T1["Build: target=test\nNo port exposed\nDepends: mongo ✓, redis ✓\nBCRYPT_ROUNDS=4 (fast)\nCmd: npm run test:all"]
         end
 
         subgraph MongoSvc["mongo service"]
-            M1["Image: mongo:7.0\nPort: 27017:27017\nVolume: mongo_data\nSeed: init-db.js\nHealthcheck: mongosh ping"]
+            M1["Image: mongo:7.0\nPort: 27017:27017\nVolume: mongo_data\nSeed: init-db.js (upsert)\nHealthcheck: mongosh ping\nstart_period: 20s"]
         end
 
         subgraph RedisSvc["redis service"]
-            R1["Image: redis:7-alpine\nPort: 6379:6379\nHealthcheck: redis-cli ping"]
+            R1["Image: redis:7-alpine\nPort: 6379:6379\nHealthcheck: redis-cli ping\nstart_period: 5s"]
         end
     end
 
@@ -602,7 +649,7 @@ flowchart LR
 
 ### Database Seeding (init-db.js)
 
-The seed script runs automatically inside the MongoDB container via `docker-entrypoint-initdb.d/`. It uses **upsert** (not insert) so repeated `docker compose up` calls never fail:
+The seed script runs automatically inside the MongoDB container via `docker-entrypoint-initdb.d/`. It uses **upsert** so repeated `docker compose up` calls never fail:
 
 ```javascript
 db.clients.updateOne(
@@ -629,17 +676,17 @@ gantt
     axisFormat  %M:%S
 
     section build-and-test job
-    Checkout code         :done, b1, 00:00, 5s
-    Build Docker images   :done, b2, after b1, 25s
-    Start mongo + redis   :done, b3, after b2, 12s
-    Run unit tests        :done, b4, after b3, 8s
-    Run integration tests :done, b5, after b4, 10s
-    Tear down             :done, b6, after b5, 3s
+    Checkout + Buildx setup   :done, b1, 00:00, 8s
+    Build Docker images (GHA cache) :done, b2, after b1, 20s
+    Start mongo + redis (health poll) :done, b3, after b2, 15s
+    Run unit tests (13x ioredis-mock) :done, b4, after b3, 5s
+    Run integration tests (30 tests) :done, b5, after b4, 12s
+    Tear down + cleanup       :done, b6, after b5, 3s
 
     section push-image job (main only)
-    Checkout              :done, p1, after b6, 3s
-    Login to Docker Hub   :done, p2, after p1, 2s
-    Build and push image  :done, p3, after p2, 20s
+    Checkout + Buildx         :done, p1, after b6, 5s
+    Login to Docker Hub       :done, p2, after p1, 2s
+    Build and push + GHA cache :done, p3, after p2, 18s
 ```
 
 ---
@@ -665,9 +712,10 @@ REDIS_URL=redis://redis:6379             # Docker: use service name 'redis'
 DEFAULT_RATE_LIMIT_MAX_REQUESTS=100      # Bucket capacity for clients without custom config
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS=60    # Refill window for clients without custom config
 
-# ─── Internal Auth ───────────────────────────────────────
+# ─── Security ────────────────────────────────────────────
 INTERNAL_API_KEY=change-this-in-prod    # Secret for x-internal-api-key header
                                          # Use a cryptographically random 32+ char string
+BCRYPT_ROUNDS=12                         # bcrypt cost factor — 12 for prod, 4 for fast tests
 
 # ─── Logging ─────────────────────────────────────────────
 LOG_LEVEL=info                           # trace | debug | info | warn | error | silent
@@ -681,6 +729,7 @@ LOG_LEVEL=info                           # trace | debug | info | warn | error |
 | `MONGO_URI` | `localhost:27017` | `mongo:27017` | `mongo:27017` | Atlas URL |
 | `REDIS_URL` | `localhost:6379` | `redis:6379` | `redis:6379` | Redis Cluster |
 | `INTERNAL_API_KEY` | `dev-internal-key` | `dev-internal-key` | `dev-internal-key` | From Vault |
+| `BCRYPT_ROUNDS` | `12` | `12` (app) / `4` (test) | `4` | `12+` |
 | `LOG_LEVEL` | `debug` | `info` | `silent` | `warn` |
 
 ---
@@ -700,16 +749,22 @@ mindmap
       Stateless app nodes
         Any pod handles any request
         Safe to kill/restart anytime
+      Standard X-RateLimit headers
+        Limit, Remaining, Reset
+        Compatible with all HTTP clients
     Developer Experience
       One command setup
         docker compose up --build
         Auto-seeded test data
       Comprehensive tests
-        27 tests, zero mocks
-        Real infrastructure
+        43 tests, 5 suites
+        ioredis-mock for fast unit tests
       Clear error messages
         400 with field details
         409 with specific cause
+      Client inspection endpoint
+        GET /clients/:clientId
+        No key material exposed
     Operational
       Auto-expiry
         Redis TTL cleans idle keys
@@ -720,16 +775,22 @@ mindmap
       Structured logs
         Machine-parseable JSON
         Request ID tracing
+      Lean Docker image
+        .dockerignore reduces build context
+        ~80MB production image
     Business Value
       Prevents abuse
         DDoS mitigation
         Fair usage enforcement
       Configurable per client
         Different plans/tiers
-        Custom windows
+        Custom windows via API
       API versioned
         /api/v1/ prefix
         Non-breaking future changes
+      Configurable security
+        BCRYPT_ROUNDS env var
+        Fast test, secure prod
 ```
 
 ### Quantified Benefits
@@ -741,7 +802,8 @@ mindmap
 | **Throughput** | Handles 10,000+ rate checks/second per pod |
 | **Accuracy** | 100% — no over-counting under any concurrency level |
 | **Setup time** | 60-90 seconds from `git clone` to fully running stack |
-| **Test coverage** | 27 tests covering happy path, edge cases, and error cases |
+| **Test coverage** | 43 tests covering happy path, edge cases, X-RateLimit headers, and error cases |
+| **Image size** | ~80MB production image (vs ~300MB single-stage) |
 
 ---
 
@@ -753,8 +815,9 @@ mindmap
 | Pre-shared internal API key | Weak authentication for admin operations | Replace with mTLS or short-lived JWT |
 | No metrics/observability endpoint | Cannot plot rate limit hit rates | Add Prometheus `/metrics` endpoint |
 | bcrypt cost adds ~300ms to registration | Client registration is slow by design | Acceptable — registration is rare |
-| No client update API | Cannot change maxRequests without manual DB edit | Add PUT /api/v1/clients/:clientId |
+| No client UPDATE API | Cannot change maxRequests without manual DB edit | Add `PUT /api/v1/clients/:clientId` |
 | No rate limit bypass / override | Cannot whitelist specific clients | Add `bypassRateLimit: Boolean` to Client model |
+| MongoDB read on every check request | Adds ~1ms latency on hot path | Cache client doc in Redis with 30s TTL |
 | No dashboard | No visual rate limit monitoring | Integrate with Grafana |
 
 ---
@@ -765,10 +828,10 @@ mindmap
 roadmap
     title RateGuard Feature Roadmap
     section Phase 2 — Management API
-        GET /api/v1/clients              : done, future
-        PUT /api/v1/clients/:clientId    : done, future
+        PUT /api/v1/clients/:clientId   : done, future
         DELETE /api/v1/clients/:clientId : done, future
         GET /api/v1/ratelimit/status/:clientId : active, future
+        Bulk client registration endpoint : future
     section Phase 3 — Observability
         GET /metrics Prometheus endpoint : future
         Grafana dashboard template       : future
@@ -776,9 +839,10 @@ roadmap
         Alert rules for spike detection  : future
     section Phase 4 — Advanced Features
         IP-based rate limiting           : future
-        Global rate limits (cross-path)  : future
+        Global rate limits cross-path    : future
         Dynamic policy updates via Redis pub/sub : future
         Rate limit bypass whitelist      : future
+        Client policy caching in Redis   : future
     section Phase 5 — Production Hardening
         Redis Cluster support            : future
         mTLS for internal auth           : future
@@ -802,28 +866,21 @@ Enhanced: POST /check → Redis GET (cache) + Redis EVAL (1 or 2 I/O operations)
 
 | Term | Definition |
 |---|---|
-| **Token Bucket** | Rate limiting algorithm where a bucket holds tokens that refill at a constant rate; each request consumes one token |
-| **Lua EVAL** | Redis command to execute a Lua script atomically on the Redis server |
-| **bcrypt** | Cryptographic hash function designed for password hashing; includes a work factor to resist brute-force |
-| **SHA-256 fingerprint** | Deterministic hash used as a fast uniqueness check for API keys |
-| **HMSET / HMGET** | Redis commands for setting/getting multiple hash fields in one command |
-| **PEXPIRE** | Redis command to set TTL in milliseconds (vs EXPIRE in seconds) |
-| **base64url** | URL-safe variant of base64 encoding (uses `-` and `_` instead of `+` and `/`) |
-| **Idempotent** | An operation that produces the same result regardless of how many times it's executed |
-| **Race condition** | A bug where the outcome depends on the relative timing of concurrent operations |
-| **TOCTOU** | Time-of-check to time-of-use — a class of race condition in distributed systems |
-| **Stateless service** | A service that holds no session or request state between calls |
-| **pino** | Extremely fast, structured JSON logging library for Node.js |
-| **Joi** | Declarative schema validation library for JavaScript objects |
-| **ioredis** | Feature-rich Redis client for Node.js with Lua scripting support |
-| **Supertest** | HTTP assertion library for testing Node.js HTTP servers |
-| **Multi-stage build** | Dockerfile technique using multiple `FROM` statements to produce minimal final images |
-| **TTL** | Time To Live — duration after which a Redis key automatically expires |
-
----
-
-<div align="center">
-
-Built with ❤️ — Node.js · Redis · MongoDB · Docker · GitHub Actions
-
-</div>
+| **Token Bucket** | Rate limiting algorithm that models a bucket refilling with tokens at a constant rate; each request consumes one token |
+| **Leaky Bucket** | Alternative algorithm that processes requests at a constant rate, smoothing out bursts |
+| **Lua EVAL** | Redis command to execute a Lua script atomically as a single operation |
+| **TOCTOU** | Time-of-check to time-of-use race condition — prevented by Redis Lua atomicity |
+| **clientId** | Unique string identifier for an API client (e.g., a service name or tenant ID) |
+| **apiKeyFingerprint** | SHA-256 hash of the apiKey used for fast uniqueness checks without bcrypt comparison |
+| **bcrypt** | Password hashing algorithm with built-in salting and configurable work factor |
+| **BCRYPT_ROUNDS** | Environment variable controlling bcrypt cost factor (default 12; use 4 for tests) |
+| **X-RateLimit-Limit** | Response header indicating the client's maximum allowed requests per window |
+| **X-RateLimit-Remaining** | Response header indicating tokens remaining in the current window |
+| **X-RateLimit-Reset** | Response header with ISO 8601 datetime of when the bucket resets to full |
+| **Retry-After** | HTTP response header (RFC 7231) indicating seconds until the client may retry |
+| **ioredis-mock** | In-memory Redis mock for Node.js enabling unit tests without a real Redis instance |
+| **pino-http** | Express middleware that logs each HTTP request as structured JSON using Pino |
+| **base64url** | URL-safe Base64 encoding used for path segments in Redis keys |
+| **TTL** | Time-to-live — Redis key expiry duration (windowSeconds × 2000ms for rate buckets) |
+| **Multi-stage build** | Dockerfile pattern using multiple `FROM` stages to produce minimal final images |
+| **ioredis** | Full-featured Redis client for Node.js supporting Lua EVAL and cluster mode |

@@ -1,22 +1,24 @@
 <div align="center">
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=28&pause=1000&color=FF6B6B&center=true&vCenter=true&width=600&lines=⚡+RateGuard;Scalable+API+Rate+Limiting;Token+Bucket+%7C+Redis+%7C+Docker" alt="RateGuard Typing SVG"/>
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=700&size=32&pause=1000&color=FF6B6B&center=true&vCenter=true&width=700&lines=⚡+RateGuard;Production-Grade+API+Rate+Limiting;Token+Bucket+%7C+Redis+Lua+%7C+Docker+%7C+CI%2FCD" alt="RateGuard Typing SVG"/>
+
+<br/>
 
 # ⚡ RateGuard
 
-### 🛡️ Production-Grade API Rate Limiting Microservice
+### 🛡️ Scalable API Rate Limiting Microservice
 
 [![CI/CD](https://github.com/ramalokeshreddyp/RateGuard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ramalokeshreddyp/RateGuard/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-20_LTS-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?style=flat-square&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Docker](https://img.shields.io/badge/Docker-Multi--Stage-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Jest](https://img.shields.io/badge/Tests-27_Passing-C21325?style=flat-square&logo=jest&logoColor=white)](https://jestjs.io/)
+[![Jest](https://img.shields.io/badge/Tests-43_Passing-C21325?style=flat-square&logo=jest&logoColor=white)](https://jestjs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
 <br/>
 
-> **RateGuard** is a dedicated, high-performance, stateless microservice that enforces per-client, per-endpoint API rate limits across any distributed system — powered by a Redis-atomic **Token Bucket** algorithm, secured by **bcrypt**, and shipped as a fully Dockerized, CI/CD-automated service.
+> **RateGuard** is a dedicated, high-performance, stateless microservice that enforces per-client, per-endpoint API rate limits across any distributed system — powered by a Redis-atomic **Token Bucket** algorithm, secured by **bcrypt**, shipped as a fully Dockerized, CI/CD-automated service with industry-standard `X-RateLimit-*` response headers.
 
 <br/>
 
@@ -63,8 +65,9 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
 | 🧮 Algorithm | **Token Bucket** — burst-friendly, continuously refilling |
 | ⚛️ Distributed consistency | **Redis Lua** atomic scripts — zero race conditions at scale |
 | 🗄️ Policy store | **MongoDB** — per-client `maxRequests` + `windowSeconds` |
-| 🔑 API key security | **bcrypt** (cost 12) + SHA-256 uniqueness fingerprint |
-| 🐳 Containerization | **Multi-stage Dockerfile** — minimal, secure production image |
+| 🔑 API key security | **bcrypt** (configurable rounds) + SHA-256 uniqueness fingerprint |
+| 📊 Standard headers | **X-RateLimit-Limit/Remaining/Reset** on every response |
+| 🐳 Containerization | **Multi-stage Dockerfile** + `.dockerignore` — minimal, secure production image |
 | 🔄 CI/CD | **GitHub Actions** — build → test → push on every merge to `main` |
 | 🚀 One-command setup | `docker compose up --build` starts everything |
 
@@ -89,7 +92,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
   <td>Framework</td>
   <td>⚡ Express</td>
   <td>4.x</td>
-  <td>Lightweight HTTP routing and middleware</td>
+  <td>Lightweight HTTP routing and middleware chain</td>
 </tr>
 <tr>
   <td>Rate State</td>
@@ -125,7 +128,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
   <td>Security</td>
   <td>🔐 bcryptjs</td>
   <td>2.x</td>
-  <td>API key hashing at cost factor 12</td>
+  <td>API key hashing at configurable cost factor (BCRYPT_ROUNDS)</td>
 </tr>
 <tr>
   <td>HTTP Security</td>
@@ -141,9 +144,9 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
 </tr>
 <tr>
   <td>Testing</td>
-  <td>🧪 Jest + Supertest</td>
-  <td>29.x / 7.x</td>
-  <td>Unit + integration test suite (27 tests)</td>
+  <td>🧪 Jest + Supertest + ioredis-mock</td>
+  <td>29.x / 7.x / 8.x</td>
+  <td>Unit (no infra) + integration (live containers) — 43 tests</td>
 </tr>
 <tr>
   <td>Containers</td>
@@ -155,7 +158,7 @@ In distributed microservice architectures, uncontrolled API traffic leads to:
   <td>CI/CD</td>
   <td>⚙️ GitHub Actions</td>
   <td>—</td>
-  <td>Automated build, test, and Docker Hub push</td>
+  <td>Automated build, test, Docker Hub push + GHA cache</td>
 </tr>
 </table>
 
@@ -182,8 +185,9 @@ flowchart TB
 
         subgraph Endpoints["Route Handlers"]
             HC["❤️ GET /health\nMongo + Redis ping"]
-            CC["👤 POST /api/v1/clients\nclientsController"]
-            RC["⚡ POST /api/v1/ratelimit/check\nrateLimitController"]
+            CC["👤 POST /api/v1/clients\nregisterClient"]
+            GC["🔍 GET /api/v1/clients/:id\ngetClient"]
+            RC["⚡ POST /api/v1/ratelimit/check\ncheckRateLimit"]
         end
 
         subgraph Services["Business Logic"]
@@ -199,14 +203,14 @@ flowchart TB
     end
 
     GW  -->|"POST /ratelimit/check"| HELM
-    ADM -->|"POST /clients + header"| HELM
+    ADM -->|"POST/GET /clients + header"| HELM
     HELM --> PINO --> AUTH --> VAL
-    VAL --> CC & RC & HC
-    CC --> CS --> MDB
+    VAL --> CC & RC & HC & GC
+    CC & GC --> CS --> MDB
     RC --> RLS --> RDS
     RC -.->|"fetch policy"| CS
     RLS -.->|"pure math helper"| TBM
-    ERR -.->|"catches errors"| RC & CC
+    ERR -.->|"catches errors"| RC & CC & GC
 ```
 
 ---
@@ -233,15 +237,15 @@ sequenceDiagram
     CS->>MDB: db.clients.findOne({clientId: "my-app"})
     MDB-->>CS: {maxRequests: 100, windowSeconds: 60}
     CS-->>RC: client document
-    RC->>RLS: checkRateLimit({clientId, path, maxRequests: 100, windowSeconds: 60})
+    RC->>RLS: checkRateLimit({clientId, path, maxRequests:100, windowSeconds:60})
     RLS->>RDS: EVAL Lua script<br/>key="ratelimit:my-app:L3YxL29yZGVycw"<br/>capacity=100, refillPerMs=0.00167
     RDS-->>RLS: [allowed=1, tokens=99.0, lastRefill=1740000000000]
-    RLS-->>RC: {allowed: true, remainingRequests: 99, resetTime: "2026-03-03T..."}
+    RLS-->>RC: {allowed:true, remainingRequests:99, resetTime:"2026-03-04T..."}
 
     alt ✅ Allowed (tokens ≥ 1)
-        RC-->>GW: 200 OK<br/>{allowed: true, remainingRequests: 99, resetTime: "..."}
-    else 🚫 Denied (tokens < 1)
-        RC-->>GW: 429 Too Many Requests<br/>Retry-After: 36<br/>{allowed: false, retryAfter: 36, resetTime: "..."}
+        RC-->>GW: 200 OK<br/>X-RateLimit-Limit: 100<br/>X-RateLimit-Remaining: 99<br/>X-RateLimit-Reset: 2026-...<br/>{allowed:true, remainingRequests:99, resetTime:"..."}
+    else 🚫 Rate Limited
+        RC-->>GW: 429 Too Many Requests<br/>Retry-After: 36<br/>X-RateLimit-Limit: 100<br/>X-RateLimit-Remaining: 0<br/>{allowed:false, retryAfter:36, resetTime:"..."}
     end
 ```
 
@@ -273,7 +277,7 @@ sequenceDiagram
 
     VAL->>CC: next()
     CC->>CS: registerClient({clientId, apiKey, maxRequests, windowSeconds})
-    CS->>CS: bcrypt.hash(apiKey, 12)
+    CS->>CS: bcrypt.hash(apiKey, config.bcryptRounds)
     CS->>CS: sha256(apiKey) → apiKeyFingerprint
     CS->>MDB: Client.create({clientId, hashedApiKey, apiKeyFingerprint, ...})
 
@@ -288,13 +292,45 @@ sequenceDiagram
     end
 ```
 
+### ▶️ Get Client Config Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant ADM as 🔧 Admin Tool
+    participant AUTH as 🔑 authInternal
+    participant GC as 🔍 clientsController.getClient
+    participant CS as ⚙️ clientService
+    participant MDB as 🍃 MongoDB
+
+    ADM->>AUTH: GET /api/v1/clients/my-service<br/>x-internal-api-key: <secret>
+    AUTH->>AUTH: Validate internal key
+
+    alt ❌ Unauthorized
+        AUTH-->>ADM: 401
+    end
+
+    AUTH->>GC: next()
+    GC->>CS: getClientByClientId("my-service")
+    CS->>MDB: findOne({clientId: "my-service"}).lean()
+
+    alt ✅ Found
+        MDB-->>CS: client document
+        CS-->>GC: document
+        GC-->>ADM: 200 {clientId, maxRequests, windowSeconds}
+    else ❌ Not found
+        MDB-->>CS: null
+        GC-->>ADM: 404 {message: "Client not found"}
+    end
+```
+
 ---
 
 ## 🪣 Token Bucket Algorithm
 
 ```mermaid
 flowchart TD
-    A([🚀 New Request Arrives]) --> B{Redis bucket\nexists?}
+    A(["🚀 New Request Arrives"]) --> B{Redis bucket\nexists?}
 
     B -->|"No — first request"| C["🆕 Initialize bucket\ntokens = maxRequests\nlastRefill = now"]
     B -->|"Yes"| D["📦 HMGET tokens + lastRefill"]
@@ -307,11 +343,11 @@ flowchart TD
     G -->|"✅ Yes — consume"| H["➖ tokens = tokens − 1\nHMSET + PEXPIRE"]
     G -->|"🚫 No — deny"| I["🔒 HMSET + PEXPIRE\n(state saved, no consumption)"]
 
-    H --> J["📤 Return\nallowed=true\nremainingRequests=⌊tokens⌋\nresetTime = ISO 8601"]
-    I --> K["📤 Return\nallowed=false\nretryAfter = seconds until 1 token\nresetTime = ISO 8601"]
+    H --> J["📤 Return\nallowed=true\nX-RateLimit-Remaining=⌊tokens⌋\nX-RateLimit-Reset=ISO 8601"]
+    I --> K["📤 Return\nallowed=false\nRetry-After=⌈seconds until 1 token⌉\nX-RateLimit-Remaining=0"]
 
-    J --> L([200 OK ✅])
-    K --> M([429 Too Many Requests 🚫])
+    J --> L(["200 OK ✅"])
+    K --> M(["429 Too Many Requests 🚫"])
 
     style A fill:#4CAF50,color:#fff
     style L fill:#4CAF50,color:#fff
@@ -347,18 +383,18 @@ flowchart LR
 
     subgraph GHA["🔄 GitHub Actions"]
         subgraph BUILD["Job: build-and-test  🔧"]
-            B1["📥 Checkout code"] --> B2
-            B2["🐳 docker compose build\napp + test images"] --> B3
-            B3["▶️ docker compose up -d\nmongo + redis"] --> B4
-            B4["🧪 Run Unit Tests\nnpm run test:unit\n8 pure algorithm tests"] --> B5
-            B5["🔗 Run Integration Tests\nnpm run test:integration\n19 endpoint tests"] --> B6
-            B6["🗑️ docker compose down -v\nCleanup"]
+            B1["📥 Checkout + Buildx"] --> B2
+            B2["🐳 docker compose build\napp + test images\n+ GHA layer cache"] --> B3
+            B3["▶️ docker compose up -d\nmongo + redis\n30×5s health poll"] --> B4
+            B4["🧪 Unit Tests\nnpm run test:unit\n13 tests (incl. ioredis-mock)"] --> B5
+            B5["🔗 Integration Tests\nnpm run test:integration\n30 endpoint tests"] --> B6
+            B6["📋 Logs on failure\n🗑️ docker compose down -v"]
         end
 
         subgraph PUSH["Job: push-image  🚀"]
-            P1["📥 Checkout"] --> P2
+            P1["📥 Checkout + Buildx"] --> P2
             P2["🔑 Login to Docker Hub\nvia secrets"] --> P3
-            P3["📦 Build & Push\n:latest + :SHA tag"]
+            P3["📦 Build & Push\n:latest + :SHA tag\n+ GHA cache"]
         end
     end
 
@@ -392,14 +428,14 @@ RateGuard/
 │   ├── server.js                   ← Bootstrap: connect Mongo+Redis, app.listen()
 │   │
 │   ├── 📁 config/
-│   │   ├── index.js                ← All env vars parsed + exported
+│   │   ├── index.js                ← All env vars parsed + exported (incl. bcryptRounds)
 │   │   ├── db.js                   ← MongoDB connect/disconnect helpers
 │   │   ├── redis.js                ← ioredis client + connection events
 │   │   └── logger.js               ← Pino structured logger instance
 │   │
 │   ├── 📁 controllers/
-│   │   ├── clientsController.js    ← Register client: orchestrate + shape response
-│   │   └── rateLimitController.js  ← Check rate limit: orchestrate + shape response
+│   │   ├── clientsController.js    ← registerClient + getClient handlers
+│   │   └── rateLimitController.js  ← checkRateLimit + X-RateLimit-* headers
 │   │
 │   ├── 📁 middleware/
 │   │   ├── authInternal.js         ← x-internal-api-key gate → 401
@@ -411,11 +447,11 @@ RateGuard/
 │   │
 │   ├── 📁 routes/
 │   │   ├── index.js                ← Mount /api/v1 router
-│   │   ├── clientsRoutes.js        ← POST /clients (auth + validate + handler)
-│   │   └── rateLimitRoutes.js      ← POST /ratelimit/check (validate + handler)
+│   │   ├── clientsRoutes.js        ← POST /clients + GET /clients/:clientId
+│   │   └── rateLimitRoutes.js      ← POST /ratelimit/check
 │   │
 │   ├── 📁 services/
-│   │   ├── clientService.js        ← bcrypt + SHA-256 + MongoDB CRUD
+│   │   ├── clientService.js        ← bcrypt(config.bcryptRounds) + SHA-256 + MongoDB
 │   │   ├── rateLimitService.js     ← Redis Lua EVAL executor + time calculations
 │   │   └── tokenBucketMath.js      ← Pure refill math (no I/O — fully unit testable)
 │   │
@@ -424,22 +460,25 @@ RateGuard/
 │
 ├── 📁 tests/
 │   ├── 📁 unit/
-│   │   └── tokenBucketMath.test.js ← 8 pure algorithm tests (no DB/Redis needed)
+│   │   ├── tokenBucketMath.test.js ← 7 pure algorithm tests (no DB/Redis needed)
+│   │   └── rateLimitService.test.js← 6 tests using ioredis-mock (no infra needed)
 │   └── 📁 integration/
 │       ├── setupIntegration.js     ← beforeAll/afterAll: connect, flush, disconnect
-│       ├── clients.test.js         ← 9 endpoint tests (201, 409, 400, 401)
-│       └── ratelimit.test.js       ← 10 endpoint tests (200, 429, 400, 404)
+│       ├── health.test.js          ← 3 tests: /health + 404 unknown routes
+│       ├── clients.test.js         ← 13 tests: POST + GET /clients endpoints
+│       └── ratelimit.test.js       ← 20 tests: check flow + X-RateLimit-* headers
 │
 ├── 📁 .github/
 │   └── 📁 workflows/
-│       └── ci.yml                  ← GitHub Actions: build → test → Docker push
+│       └── ci.yml                  ← GitHub Actions: Buildx + health poll + test + push
 │
-├── Dockerfile                      ← Multi-stage: deps → test → prod-deps → runner
-├── docker-compose.yml              ← Orchestrate: app + test + mongo + redis
+├── Dockerfile                      ← 4-stage: deps → test → prod-deps → runner
+├── .dockerignore                   ← Excludes node_modules, tests, .env from context
+├── docker-compose.yml              ← app + test + mongo + redis + health checks
 ├── init-db.js                      ← MongoDB seed script (3 clients, idempotent upsert)
 ├── jest.config.js                  ← Jest: runInBand, 30s timeout, node env
-├── package.json                    ← Dependencies, npm scripts
-├── .env.example                    ← Environment variable template
+├── package.json                    ← Dependencies + ioredis-mock devDep
+├── .env.example                    ← Annotated environment variable template
 ├── .gitignore
 ├── API_DOCS.md                     ← Full endpoint reference + cURL examples
 ├── ARCHITECTURE.md                 ← Architecture decisions + all diagrams
@@ -478,7 +517,7 @@ docker compose up --build
 ```
 
 This single command:
-1. 🏗️ Builds multi-stage Docker image (deps → test → prod)
+1. 🏗️ Builds multi-stage Docker image (4 stages, `.dockerignore` keeps context lean)
 2. 🍃 Starts MongoDB with **3 pre-seeded test clients**
 3. 🔴 Starts Redis 7
 4. ⚡ Starts RateGuard API on port `3000`
@@ -513,9 +552,9 @@ curl -X POST http://localhost:3000/api/v1/clients \
   -H "Content-Type: application/json" \
   -H "x-internal-api-key: dev-internal-key" \
   -d '{
-    "clientId":     "my-service",
-    "apiKey":       "super-strong-api-key-123",
-    "maxRequests":  10,
+    "clientId":      "my-service",
+    "apiKey":        "super-strong-api-key-123",
+    "maxRequests":   10,
     "windowSeconds": 60
   }'
 ```
@@ -529,10 +568,27 @@ curl -X POST http://localhost:3000/api/v1/clients \
 }
 ```
 
-**409 Conflict** (duplicate clientId or apiKey):
-```json
-{ "message": "clientId or apiKey already exists" }
+---
+
+### 🔍 `GET /api/v1/clients/:clientId` — Get Client Config
+
+> Requires `x-internal-api-key` header. Returns rate-limit policy — no key material exposed.
+
+```bash
+curl http://localhost:3000/api/v1/clients/my-service \
+  -H "x-internal-api-key: dev-internal-key"
 ```
+
+**200 OK:**
+```json
+{
+  "clientId":      "my-service",
+  "maxRequests":   10,
+  "windowSeconds": 60
+}
+```
+
+**404** if clientId doesn't exist.
 
 ---
 
@@ -549,19 +605,20 @@ curl -X POST http://localhost:3000/api/v1/ratelimit/check \
 {
   "allowed":           true,
   "remainingRequests": 9,
-  "resetTime":         "2026-03-03T12:31:00.000Z"
+  "resetTime":         "2026-03-04T08:05:00.000Z"
 }
 ```
+> + Headers: `X-RateLimit-Limit: 10` · `X-RateLimit-Remaining: 9` · `X-RateLimit-Reset: 2026-...`
 
 **429 Too Many Requests:**
 ```json
 {
   "allowed":    false,
   "retryAfter": 36,
-  "resetTime":  "2026-03-03T12:31:36.000Z"
+  "resetTime":  "2026-03-04T08:05:36.000Z"
 }
 ```
-> + Header: `Retry-After: 36`
+> + Headers: `Retry-After: 36` · `X-RateLimit-Limit: 10` · `X-RateLimit-Remaining: 0` · `X-RateLimit-Reset: 2026-...`
 
 ---
 
@@ -613,8 +670,8 @@ docker compose run --rm test npm run test:all
 ### Run individual suites
 
 ```bash
-# Unit tests only (no DB needed — pure algorithm math)
-docker compose run --rm test npm run test:unit
+# Unit tests only — no Docker/Redis/Mongo needed
+npm run test:unit        # uses ioredis-mock
 
 # Integration tests only (live Mongo + Redis)
 docker compose run --rm test npm run test:integration
@@ -623,23 +680,26 @@ docker compose run --rm test npm run test:integration
 ### Test results
 
 ```
- PASS  tests/unit/tokenBucketMath.test.js      (8 tests)
- PASS  tests/integration/clients.test.js       (9 tests)
- PASS  tests/integration/ratelimit.test.js     (10 tests)
+ PASS  tests/unit/tokenBucketMath.test.js      (7 tests)
+ PASS  tests/unit/rateLimitService.test.js      (6 tests)
+ PASS  tests/integration/health.test.js         (3 tests)
+ PASS  tests/integration/clients.test.js        (13 tests)
+ PASS  tests/integration/ratelimit.test.js      (14 tests)
 
- Test Suites:   3 passed, 3 total
- Tests:         27 passed, 27 total
- Snapshots:     0 total
- Time:          ~18s
+ Test Suites:   5 passed, 5 total
+ Tests:         43 passed, 43 total
+ Time:          ~20s
 ```
 
 ### Test coverage map
 
-| Suite | What's tested |
-|---|---|
-| `tokenBucketMath.test.js` | First request, burst cap, fractional tokens, zero-elapsed refill, long idle, undefined state |
-| `clients.test.js` | 201 success, defaults applied, apiKey hidden, duplicate clientId 409, duplicate apiKey 409, invalid payload 400, missing clientId 400, missing auth key 401, wrong auth key 401 |
-| `ratelimit.test.js` | Allow → allow → deny flow, remainingRequests integer, ISO resetTime on 200, ISO resetTime on 429, per-path isolation, Retry-After header format, 404 unknown client, 400 missing clientId, 400 missing path, 400 empty strings |
+| Suite | Type | What's tested |
+|---|---|---|
+| `tokenBucketMath.test.js` | Unit | First request, burst cap, fractional block, zero-elapsed refill, long idle, undefined state, lastRefillMs output |
+| `rateLimitService.test.js` | Unit (ioredis-mock) | Allowed first request, decreasing remaining, denied on exhaust, retryAfter ≥ 1, ISO resetTime, path isolation |
+| `health.test.js` | Integration | `/health` → 200 with mongoOk/redisOk, unknown GET → 404, unknown POST → 404 |
+| `clients.test.js` | Integration | 201 success, defaults applied, apiKey hidden, 409 duplicate clientId, 409 duplicate apiKey, 400 invalid payload, 400 missing clientId, 401 missing key, 401 wrong key, GET 200 correct body, GET 200 no key material, GET 404 unknown, GET 401 |
+| `ratelimit.test.js` | Integration | Allow→allow→deny, remainingRequests integer, ISO resetTime 200, ISO resetTime 429, per-path isolation, Retry-After header, 404 unknown client, 400 missing clientId, 400 missing path, 400 empty strings, X-RateLimit-Limit on 200, X-RateLimit-Remaining on 200, X-RateLimit-Reset on 200, all three on 429 |
 
 ---
 
@@ -648,13 +708,14 @@ docker compose run --rm test npm run test:integration
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `PORT` | `3000` | No | HTTP server port |
+| `NODE_ENV` | `development` | No | Runtime environment |
 | `MONGO_URI` | `mongodb://mongo:27017/ratelimitdb` | Yes | MongoDB connection string |
 | `REDIS_URL` | `redis://redis:6379` | Yes | Redis connection string |
 | `DEFAULT_RATE_LIMIT_MAX_REQUESTS` | `100` | No | Default bucket capacity |
 | `DEFAULT_RATE_LIMIT_WINDOW_SECONDS` | `60` | No | Default refill window (seconds) |
-| `INTERNAL_API_KEY` | `dev-internal-key` | Yes | Secret for client registration endpoint |
-| `LOG_LEVEL` | `info` | No | Pino log level (trace/debug/info/warn/error) |
-| `NODE_ENV` | `development` | No | Runtime environment |
+| `INTERNAL_API_KEY` | `dev-internal-key` | Yes | Secret for client management endpoints |
+| `BCRYPT_ROUNDS` | `12` | No | bcrypt cost factor for API key hashing |
+| `LOG_LEVEL` | `info` | No | Pino log level (trace/debug/info/warn/error/silent) |
 
 Copy `.env.example` → `.env` and update values before running outside Docker.
 
@@ -667,7 +728,7 @@ flowchart TD
     REQ(["🌐 Incoming Request"]) --> H1["🪖 Helmet\nCSP · HSTS · X-Frame-Options"]
     H1 --> R1{Which route?}
 
-    R1 -->|"/api/v1/clients"| A1["🔑 authInternal\ncheck x-internal-api-key"]
+    R1 -->|"/api/v1/clients (POST or GET)"| A1["🔑 authInternal\ncheck x-internal-api-key"]
     A1 -->|"❌ Missing/Wrong"| E1(["401 Unauthorized"])
     A1 -->|"✅ Valid"| V1
 
@@ -688,9 +749,9 @@ flowchart TD
 
 | Security Concern | Mitigation |
 |---|---|
-| API key exposure | bcrypt hash (cost 12) — keys never stored in plaintext |
+| API key exposure | bcrypt hash (`BCRYPT_ROUNDS`, default 12) — keys never stored in plaintext |
 | Duplicate API keys | SHA-256 fingerprint with unique MongoDB index |
-| Unauthorized registration | `x-internal-api-key` header gate |
+| Unauthorized management | `x-internal-api-key` header gate (POST + GET /clients) |
 | Race conditions | Atomic Redis Lua `EVAL` — single operation, no TOCTOU |
 | Error information leakage | Generic `"Internal server error"` for 500s; detail only in server logs |
 | HTTP header attacks | `helmet` middleware (HSTS, CSP, X-Frame-Options, etc.) |
@@ -707,9 +768,10 @@ flowchart TB
     LB --> P1["⚡ RateGuard Pod 1\n(stateless)"]
     LB --> P2["⚡ RateGuard Pod 2\n(stateless)"]
     LB --> P3["⚡ RateGuard Pod 3\n(stateless)"]
+    LB --> PN["⚡ RateGuard Pod N...\n(stateless)"]
 
-    P1 & P2 & P3 --> RD[("🔴 Redis Cluster\nShared token state\nAtomic across all pods\nO(1) per request")]
-    P1 & P2 & P3 --> MG[("🍃 MongoDB Replica Set\nShared client policies\nRead-heavy, low churn")]
+    P1 & P2 & P3 & PN --> RD[("🔴 Redis Cluster\nShared token state\nAtomic across all pods\nO(1) per request")]
+    P1 & P2 & P3 & PN --> MG[("🍃 MongoDB Replica Set\nShared client policies\nRead-heavy, low churn")]
 ```
 
 - **Stateless pods** — any pod can handle any request
@@ -724,7 +786,7 @@ flowchart TB
 | Document | Description |
 |---|---|
 | [API_DOCS.md](API_DOCS.md) | Complete endpoint reference with schemas, cURL examples, and full error table |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Detailed architecture decisions, all diagrams, data design, security, and scalability |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture decisions, all diagrams, data design, security, and scalability |
 | [projectdocumentation.md](projectdocumentation.md) | Problem statement, tech rationale, module breakdown, testing strategy, production readiness |
 
 ---
